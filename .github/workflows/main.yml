@@ -25,7 +25,6 @@ jobs:
             -p 3389:3389 \
             --device=/dev/kvm \
             dockurr/windows
-          
           echo "Windows starting..."
           sleep 900
 
@@ -36,35 +35,17 @@ jobs:
         run: |
           cloudflared tunnel --url http://localhost:8006 2>&1 | tee tunnel.log &
           sleep 20
-          
           URL=$(grep -oP 'https://[a-z0-9-]+.trycloudflare.com' tunnel.log | head -1)
-          
           echo "## Windows 10 Ready" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Access URL: $URL" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "URL: $URL" >> $GITHUB_STEP_SUMMARY
           echo "Username: docker" >> $GITHUB_STEP_SUMMARY
-          echo "Password: none" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Install Chrome Remote Desktop:" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Step 1: Download installer" >> $GITHUB_STEP_SUMMARY
+          echo "Install Chrome RD in Windows PowerShell:" >> $GITHUB_STEP_SUMMARY
           echo "Invoke-WebRequest -Uri https://dl.google.com/dl/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi -OutFile C:crd.msi" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Step 2: Install" >> $GITHUB_STEP_SUMMARY
-          echo "msiexec /i C:crd.msi /quiet /norestart" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Step 3: Get code from https://remotedesktop.google.com/headless" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Step 4: Run in PowerShell" >> $GITHUB_STEP_SUMMARY
-          echo "cd C:Program Files (x86)GoogleChrome Remote DesktopCurrentVersion" >> $GITHUB_STEP_SUMMARY
-          echo ".
-emoting_start_host.exe --code=YOUR_CODE --redirect-url=https://remotedesktop.google.com/_/oauthredirect --name=Windows10 --pin=123456" >> $GITHUB_STEP_SUMMARY
-          
+          echo "msiexec /i C:crd.msi /quiet" >> $GITHUB_STEP_SUMMARY
           echo "Windows URL: $URL"
-          
           while true; do
-            echo "Running..."
             docker ps | grep windows || docker start windows
             sleep 300
           done
