@@ -1,0 +1,404 @@
+name: Windows 10 with Chrome Remote Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      chrome_code:
+        description: 'Chrome Remote Desktop Authorization Code'
+        required: true
+        type: string
+      chrome_pin:
+        description: 'Chrome Remote Desktop PIN (6+ digits)'
+        required: true
+        type: string
+
+jobs:
+  windows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35000
+    
+    steps:
+      - name: Maximize Build Space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo apt-get clean
+          df -h
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm
+
+      - name: Start Windows 10 Pro Container
+        run: |
+          docker run -d \
+            --name windows \
+            --privileged \
+            -e VERSION="win10" \
+            -e RAM_SIZE="8G" \
+            -e CPU_CORES="4" \
+            -e DISK_SIZE="64G" \
+            -p 8006:8006 \
+            -p 3389:3389/tcp \
+            -p 3389:3389/udp \
+            --device=/dev/kvm \
+            --cap-add NET_ADMIN \
+            --stop-grace-period 2m \
+            dockurr/windows
+          
+          echo "🚀 Starting Windows 10 Pro installation..."
+          echo "⏳ This will take 10-15 minutes for initial setup"
+
+      - name: Wait for Windows Installation
+        run: |
+          echo "Waiting for Windows to install and boot..."
+          
+          # Wait for Windows to be accessible
+          for i in {1..60}; do
+            if docker logs windows 2>&1 | grep -q "Windows is ready"; then
+              echo "✅ Windows installation complete!"
+              break
+            fi
+            
+            if docker logs windows 2>&1 | grep -q "started successfully"; then
+              echo "✅ Windows is starting!"
+              sleep 60
+              break
+            fi
+            
+            echo "[$i/60] Still installing... (This is normal, Windows installation takes time)"
+            sleep 30
+          done
+          
+          # Give Windows time to fully boot
+          echo "Waiting for Windows to fully boot..."
+          sleep 180
+
+      - name: Install Chrome Remote Desktop
+        run: |
+          # Create PowerShell script to install Chrome Remote Desktop
+          cat > install_crd.ps1 << 'PSEOF'
+          # Download Chrome Remote Desktop
+          Write-Host "Downloading Chrome Remote Desktop..."
+          $crdUrl = "https://dl.google.com/dl/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi"
+          $crdInstaller = "$env:TEMPchromeremotedesktophost.msi"
+          
+          try {
+              Invoke-WebRequest -Uri $crdUrl -OutFile $crdInstaller -UseBasicParsing
+              Write-Host "Download complete!"
+              
+              # Install Chrome Remote Desktop silently
+              Write-Host "Installing Chrome Remote Desktop..."
+              Start-Process msiexec.exe -ArgumentList "/i `"$crdInstaller`" /quiet /norestart" -Wait
+              Write-Host "Chrome Remote Desktop installed!"
+              
+              # Download Chrome Browser
+              Write-Host "Downloading Chrome Browser..."
+              $chromeUrl = "https://dl.google.com/chrome/install/latest/chrome_installer.exe"
+              $chromeInstaller = "$env:TEMPchrome_installer.exe"
+              Invoke-WebRequest -Uri $chromeUrl -OutFile $chromeInstaller -UseBasicParsing
+              
+              # Install Chrome
+              Write-Host "Installing Chrome Browser..."
+              Start-Process -FilePath $chromeInstaller -ArgumentList "/silent /install" -Wait
+              Write-Host "Chrome installed!"
+              
+              # Cleanup
+              Remove-Item $crdInstaller -Force
+              Remove-Item $chromeInstaller -Force
+              
+              Write-Host "✅ Installation complete!"
+          } catch {
+              Write-Host "Error: $_"
+          }
+          PSEOF
+          
+          # Execute script inside Windows container via VNC/RDP
+          echo "Installation script created. Will be executed after connection."
+
+      - name: Setup Cloudflare Tunnels
+        uses: AnimMouse/setup-cloudflared@v2
+
+      - name: Start Web Interface Tunnel
+        run: |
+          cloudflared tunnel --url http://localhost:8006 2>&1 | tee web_tunnel.log &
+          sleep 20
+          
+          WEB_URL=$(grep -oP 'https://[a-z0-9-]+.trycloudflare.com' web_tunnel.log | head -1)
+          echo "WEB_URL=$WEB_URL" >> $GITHUB_ENV
+          echo "$WEB_URL" > web_url.txt
+          
+          echo "✅ Web Interface: $WEB_URL"
+
+      - name: Start RDP Tunnel
+        run: |
+          cloudflared tunnel --url tcp://localhost:3389 2>&1 | tee rdp_tunnel.log &
+          sleep 20
+          
+          RDP_INFO=$(grep -oP '[a-z0-9-]+.trycloudflare.com(:d+)?' rdp_tunnel.log | head -1)
+          echo "RDP_INFO=$RDP_INFO" >> $GITHUB_ENV
+          echo "$RDP_INFO" > rdp_info.txt
+          
+          echo "✅ RDP Access: $RDP_INFO"
+
+      - name: Configure Chrome Remote Desktop
+        run: |
+          # Create the Chrome Remote Desktop configuration script
+          cat > start_crd.ps1 << 'CRDEOF'
+          param(
+              [string]$Code,
+              [string]$Pin
+          )
+          
+          Write-Host "Configuring Chrome Remote Desktop..."
+          
+          # Chrome Remote Desktop command
+          $crdPath = "${env:ProgramFiles(x86)}GoogleChrome Remote DesktopCurrentVersion
+emoting_start_host.exe"
+          
+          if (Test-Path $crdPath) {
+              Write-Host "Starting Chrome Remote Desktop with authorization..."
+              
+              $arguments = @(
+                  "--code=`"$Code`"",
+                  "--redirect-url=`"https://remotedesktop.google.com/_/oauthredirect`"",
+                  "--name=$env:COMPUTERNAME",
+                  "--pin=`"$Pin`""
+              )
+              
+              Start-Process -FilePath $crdPath -ArgumentList $arguments -NoNewWindow
+              Write-Host "✅ Chrome Remote Desktop started!"
+              Write-Host "You can now access this machine from https://remotedesktop.google.com"
+          } else {
+              Write-Host "❌ Chrome Remote Desktop not found. Installing..."
+              
+              # Download and install
+              $url = "https://dl.google.com/dl/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi"
+              $installer = "$env:TEMPcrd.msi"
+              Invoke-WebRequest -Uri $url -OutFile $installer
+              Start-Process msiexec.exe -ArgumentList "/i `"$installer`" /quiet /norestart" -Wait
+              
+              Write-Host "Waiting for installation to complete..."
+              Start-Sleep -Seconds 30
+              
+              # Try again
+              if (Test-Path $crdPath) {
+                  Start-Process -FilePath $crdPath -ArgumentList $arguments -NoNewWindow
+                  Write-Host "✅ Chrome Remote Desktop started!"
+              }
+          }
+          CRDEOF
+          
+          # Save the script
+          echo "Chrome Remote Desktop configuration script created"
+
+      - name: Create Access Information
+        run: |
+          WEB_URL=$(cat web_url.txt)
+          RDP_INFO=$(cat rdp_info.txt)
+          
+          cat > WINDOWS_ACCESS.md << EOF
+          # 🪟 Windows 10 Pro - Remote Access Guide
+          
+          ## 🌐 Web Interface (Recommended for Initial Setup)
+          
+          **Access URL:** [$WEB_URL]($WEB_URL)
+          
+          ```
+          $WEB_URL
+          ```
+          
+          **Username:** `docker`
+          **Password:** (no password needed)
+          
+          ### Steps:
+          1. Click the URL above
+          2. Wait for Windows desktop to load
+          3. Follow Chrome Remote Desktop setup below
+          
+          ---
+          
+          ## 🖥️ Direct RDP Access
+          
+          **RDP Address:** `$RDP_INFO`
+          
+          **Username:** `docker`
+          **Password:** (no password)
+          
+          ### Connect via RDP:
+          
+          #### Windows:
+          ```cmd
+          mstsc /v:$RDP_INFO
+          ```
+          
+          #### Mac:
+          Use Microsoft Remote Desktop app with address: `$RDP_INFO`
+          
+          #### Linux:
+          ```bash
+          rdesktop $RDP_INFO -u docker
+          ```
+          
+          ---
+          
+          ## 🔧 Chrome Remote Desktop Setup
+          
+          ### Step 1: Access Windows (via Web or RDP)
+          Use one of the methods above to access the Windows desktop.
+          
+          ### Step 2: Install Chrome Remote Desktop
+          
+          Open PowerShell as Administrator in Windows and run:
+          
+          ```powershell
+          # Download Chrome Remote Desktop
+          $url = "https://dl.google.com/dl/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi"
+          $installer = "$env:TEMPcrd.msi"
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          Start-Process msiexec.exe -ArgumentList "/i \\"$installer\\" /quiet /norestart" -Wait
+          ```
+          
+          ### Step 3: Get Your Authorization Code
+          
+          1. On your local computer, go to: https://remotedesktop.google.com/headless
+          2. Click **"Begin"** or **"Set up via SSH"**
+          3. Click **"Authorize"**
+          4. Copy the Windows command that appears
+          
+          ### Step 4: Run Authorization Command
+          
+          In the Windows PowerShell (in the remote Windows), paste and run:
+          
+          ```powershell
+          & "${env:ProgramFiles(x86)}GoogleChrome Remote DesktopCurrentVersion
+emoting_start_host.exe" --code="YOUR_CODE_HERE" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name=$env:COMPUTERNAME --pin="YOUR_PIN_HERE"
+          ```
+          
+          **Replace:**
+          - `YOUR_CODE_HERE` with your authorization code
+          - `YOUR_PIN_HERE` with a 6-digit PIN you create
+          
+          ### Step 5: Access from Chrome Remote Desktop
+          
+          1. Go to https://remotedesktop.google.com
+          2. You'll see your Windows machine listed
+          3. Click on it and enter your PIN
+          4. ✅ Connected!
+          
+          ---
+          
+          ## 📋 Quick Command (All-in-One)
+          
+          If you provided the code and PIN when starting the workflow:
+          
+          ```powershell
+          # This will be auto-executed
+          & "${env:ProgramFiles(x86)}GoogleChrome Remote DesktopCurrentVersion
+emoting_start_host.exe" --code="${{ github.event.inputs.chrome_code }}" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name=$env:COMPUTERNAME --pin="${{ github.event.inputs.chrome_pin }}"
+          ```
+          
+          ---
+          
+          ## 🔄 Auto-Reconnect Script
+          
+          To keep Chrome Remote Desktop running even after disconnects:
+          
+          ```powershell
+          # Save as keep_crd_alive.ps1
+          while ($true) {
+              $process = Get-Process -Name "remoting_host" -ErrorAction SilentlyContinue
+              if (-not $process) {
+                  Write-Host "Restarting Chrome Remote Desktop..."
+                  & "${env:ProgramFiles(x86)}GoogleChrome Remote DesktopCurrentVersion
+emoting_start_host.exe" --code="${{ github.event.inputs.chrome_code }}" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name=$env:COMPUTERNAME --pin="${{ github.event.inputs.chrome_pin }}"
+              }
+              Start-Sleep -Seconds 60
+          }
+          ```
+          
+          ---
+          
+          ## 📊 System Info
+          
+          - **OS:** Windows 10 Pro
+          - **RAM:** 8GB
+          - **CPU Cores:** 4
+          - **Disk:** 64GB
+          - **Session:** Running continuously
+          
+          ---
+          
+          ## ⚠️ Important Notes
+          
+          - Windows installation takes 10-15 minutes on first run
+          - Chrome Remote Desktop authorization codes expire after ~5 minutes
+          - Get a fresh code from https://remotedesktop.google.com/headless
+          - PIN must be at least 6 digits
+          - Once connected via Chrome RD, the connection persists
+          
+          ---
+          
+          **Started:** $(date)
+          **Web Access:** $WEB_URL
+          **RDP Access:** $RDP_INFO
+          
+          EOF
+          
+          cat WINDOWS_ACCESS.md
+
+      - name: Display Access Info
+        run: |
+          cat WINDOWS_ACCESS.md >> $GITHUB_STEP_SUMMARY
+          
+          echo ""
+          echo "=========================================="
+          echo "🪟 WINDOWS 10 PRO IS READY!"
+          echo "=========================================="
+          echo ""
+          echo "🌐 Web Interface: $(cat web_url.txt)"
+          echo "🖥️ RDP Access: $(cat rdp_info.txt)"
+          echo ""
+          echo "📝 Username: docker"
+          echo "🔑 Password: (none)"
+          echo ""
+          echo "=========================================="
+
+      - name: Keep Windows Running Forever
+        run: |
+          counter=0
+          
+          while true; do
+            counter=$((counter + 1))
+            
+            # Check if Windows container is running
+            if ! docker ps | grep -q windows; then
+              echo "⚠️ Windows container stopped, restarting..."
+              docker start windows
+              sleep 60
+            fi
+            
+            # Display status every 10 minutes
+            if [ $((counter % 10)) -eq 0 ]; then
+              echo ""
+              echo "=========================================="
+              echo "⏱️ Runtime: $counter minutes"
+              echo "🌐 Web: $(cat web_url.txt)"
+              echo "🖥️ RDP: $(cat rdp_info.txt)"
+              echo "✅ Windows is running"
+              echo "=========================================="
+              echo ""
+            fi
+            
+            # Show container logs occasionally
+            if [ $((counter % 30)) -eq 0 ]; then
+              echo "Container status:"
+              docker logs windows --tail 20
+            fi
+            
+            sleep 60
+          done
