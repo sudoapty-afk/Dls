@@ -1,4 +1,5 @@
-name: Windows 10 RDP
+
+name: Windows Chrome RD
 
 on:
   workflow_dispatch:
@@ -26,37 +27,49 @@ jobs:
             --device=/dev/kvm \
             dockurr/windows
           
-          echo "Starting Windows 10..."
-          sleep 600
+          echo "Windows starting..."
+          sleep 900
 
       - name: Setup Tunnel
         uses: AnimMouse/setup-cloudflared@v2
 
-      - name: Get URLs
+      - name: Expose Windows
         run: |
-          cloudflared tunnel --url http://localhost:8006 > web.log 2>&1 &
+          cloudflared tunnel --url http://localhost:8006 2>&1 | tee tunnel.log &
           sleep 20
           
-          WEB_URL=$(grep -oP 'https://[a-z0-9-]+.trycloudflare.com' web.log | head -1)
+          URL=$(grep -oP 'https://[a-z0-9-]+.trycloudflare.com' tunnel.log | head -1)
           
           echo "## Windows 10 Ready" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Access: [$WEB_URL]($WEB_URL)" >> $GITHUB_STEP_SUMMARY
+          echo "**Access URL:** $URL" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Username: docker" >> $GITHUB_STEP_SUMMARY
-          echo "Password: (none)" >> $GITHUB_STEP_SUMMARY
+          echo "**Username:** docker" >> $GITHUB_STEP_SUMMARY
+          echo "**Password:** (none)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "After Windows loads, open PowerShell and run:" >> $GITHUB_STEP_SUMMARY
+          echo "### Install Chrome Remote Desktop in Windows:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo '```
-          echo 'Invoke-WebRequest -Uri "https://dl.google.com/dl/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi" -OutFile "$env:TEMPcrd.msi"' >> $GITHUB_STEP_SUMMARY
-          echo 'Start-Process msiexec.exe -ArgumentList "/i $env:TEMPcrd.msi /quiet" -Wait' >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "Open PowerShell and run:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Invoke-WebRequest -Uri https://dl.google.com/dl/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi -OutFile C:crd.msi" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "msiexec /i C:crd.msi /quiet /norestart" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Get code from: https://remotedesktop.google.com/headless" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Then run:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo 'cd "C:Program Files (x86)GoogleChrome Remote DesktopCurrentVersion"' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo ".
+emoting_start_host.exe --code=YOUR_CODE --redirect-url=https://remotedesktop.google.com/_/oauthredirect --name=Windows10 --pin=123456" >> $GITHUB_STEP_SUMMARY
           
-          echo "Windows URL: $WEB_URL"
+          echo "========================================"
+          echo "Windows URL: $URL"
+          echo "========================================"
           
           while true; do
-            echo "Windows running..."
+            echo "Windows running"
             docker ps | grep windows || docker start windows
             sleep 300
           done
